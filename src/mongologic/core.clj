@@ -1,62 +1,10 @@
 (ns mongologic.core
-  ; The definition of 'find' below would override the mapping to the
-  ; same-named var referred from clojure.core (with a warning), but
-  ; explicitly excluding it here at least makes it clear that we're
-  ; aware of the conflict, and removes the warning.
-  ; http://books.google.com/books?id=I8KdEKceCHAC&pg=PA328&lpg=PA328&dq=excluding+vars+from+clojure.core+because+their+names&source=bl&ots=wNiNQ8T6f9&sig=mrdrzv51jhg_dOmx2MbSS2AaG_g&hl=en&sa=X&ei=yi0VUJvGCqTX0QXo5oGoDg&ved=0CGIQ6AEwAA
-  ; The same technique is used in clojure.string
-  ; https://github.com/clojure/clojure/blob/master/src/clj/clojure/string.clj
-  ; Notice that clojure.core's find can still be called if it's fully qualified,
-  ; i.e. by using clojure.core/find .
-  ; http://blog.8thlight.com/colin-jones/2010/12/05/clojure-libs-and-namespaces-require-use-import-and-ns.html
-  ;
   (:refer-clojure :exclude [find count update])
   (:require [somnium.congomongo :as db]
             [clj-time.core :as time]
             [taoensso.timbre :as log])
   (:load "coerce"))
 
-;; ORGANIZING TESTS  #styleguide #conventions
-;; ...
-;; Although it’s usually better to keep the number of asserts in each test to
-;; the lowest possible number, sometimes it’s logical to add asserts to
-;; existing tests rather than adding new tests.
-;; When a test does have several assertions, it often becomes more difficult
-;; to understand and maintain. When an assertion fails, it isn’t always clear
-;; what the specific failure is and what specific functionality is breaking.
-;; In this section, we’ll look at two macros that can help us manage
-;; assertions: the testing macro and the are macro.
-;; ...
-;; Using the `are` macro combines several forms into a single form. When any
-;; of them fail, the failure is reported as a single failure. This is why it
-;; should be used to group related assertions, not as a means to remove
-;; duplication.
-;;
-;; Rathore's "Clojure in Action"
-
-;; #Test "Suites"
-;; ...
-;; test-ns-hook
-;; fixtures
-;; ...
-;; Fixtures and test-ns-hook are mutually exclusive; if you define the
-;; latter, then the former will not be applied.
-;; Emerick's "Clojure Programming", p. 477
-;;
-;;
-;; #FIXTURES
-;; Used in Monger for example
-;; https://github.com/michaelklishin/monger/search?p=2&q=use-fixtures&utf8=%E2%9C%93
-
-
-; About publishing Mongologic as a library see
-; https://github.com/technomancy/leiningen/blob/stable/doc/TUTORIAL.md#publishing-libraries
-
-; #IDEA
-; Conventionally, in MongoDB, underscores are used to separate words of
-; compound collection or field names. This conflicts with the convention in
-; Clojure of using dashes. Maybe Mongologic should provide an option to do
-; this mapping, so that underscores don't "leak" into Clojure code.
 
 ;; #TODO
 ;; Currently Mongologic functions use a global database connection.
