@@ -147,7 +147,7 @@
           {:isbn "978-3-16-148410-1"}]
     (is (first (mongologic/create component book1))
         "Should succeed")
-    (is (= [false {:base :insert-error}] 
+    (is (= [false {:base [:insert-error]}]
            (mongologic/create component book1))
         "Should return :insert-error")))
 
@@ -179,7 +179,7 @@
       (is book1-success "Should create book1 successfully")
       (is book2-success "Should create book2 successfully")
       (testing "An :update-error is returned on database-level update errors"
-        (is (= [false {:base :update-error}]
+        (is (= [false {:base [:update-error]}]
                (mongologic/update component
                                   (:_id book1)
                                   {:isbn (:isbn book2)}))

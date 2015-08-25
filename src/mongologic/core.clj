@@ -6,24 +6,6 @@
   (:load "coerce"))
 
 
-;; #TODO
-;; Currently Mongologic functions use a global database connection.
-;;
-;; It would be preferable that the connection is passed as a parameter to
-;; each function. That would also allow to use Mongologic with Sierra's
-;; 'Component' framework.
-;;
-;; If connection is passed as parameter, then all functions would require
-;; at least two parameters: the connection and the entity. This would be
-;; similar to the Monger API, which most of the time requires `db` and
-;; `collection` parameters. But probably it will be less verbose to pass
-;; both the connection and the entity as a `model-component` parameter. It
-;; would be similar to a Rails' ActiveRecord object, which encapsulates the
-;; "entity" behavior (validations, hooks..) and the database connection [^1].
-;;
-;; [^1]: See "Connection to multiple databases in different models" in
-;; http://api.rubyonrails.org/classes/ActiveRecord/Base.html
-
 ; #TODO
 ; attributes ending with _id should be automatically converted to ObjectIds with to-object-id,
 ; or maybe better, it should be possible to specify the attribute types of a
@@ -179,7 +161,7 @@
   Returns:
     - [false validation-errors] if validations fail (where validation-errors
     is what the validator returned)
-    - [false {:base :insert-error}] if insertion into the database fails
+    - [false {:base [:insert-error]}] if insertion into the database fails
     - [true created-object] otherwise (created-object will have an :_id and
       :created_at and :updated_at timestamps)"
   [{:keys [database entity] :as model-component} attributes]
@@ -276,7 +258,7 @@
           ;; #TODO
           ;; Maybe the exception should be raised, maybe the error
           ;; should be in a set like in Validateur
-          [false {:base :insert-error}])))))
+          [false {:base [:insert-error]}])))))
 
 ; In Ruby on Rails, `find` also accepts an id, or an array of ids
 ; http://api.rubyonrails.org/classes/ActiveRecord/FinderMethods.html#method-i-find
@@ -1007,7 +989,7 @@
                                                  old-record)]
                   [true (composed-after-update-fn updated-record)]
                   [true updated-record])
-                [false {:base :update-error}])))))))
+                [false {:base [:update-error]}])))))))
 
 ; Named after the equivalent Rails method
 ; http://api.rubyonrails.org/classes/ActiveRecord/Relation.html#method-i-delete_all
