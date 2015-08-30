@@ -8,13 +8,6 @@
 
 (def ^:dynamic *mock-calls*)
 
-
-; (defn init-database []
-;   (congomongo/with-mongo conn
-;     (congomongo/drop-coll! :books)
-;     (congomongo/create-collection! :books)
-;     (congomongo/add-index! :books [:isbn] :unique true)))
-
 (defn purge-collection
   [f]
   (congomongo/with-mongo conn (congomongo/drop-coll! :books))
