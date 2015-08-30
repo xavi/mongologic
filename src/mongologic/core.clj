@@ -164,17 +164,11 @@
            {:_id {:$ne (:_id document)}}]
         all-conditions
           (if conditions (conj base-conditions conditions) base-conditions)]
-    (log/debug "attribute-name:" attribute-name)
-    (log/debug "order:" order)
-    (log/debug "all-conditions:" all-conditions)
     (first (find model-component
                  {:where {:$and all-conditions}
                   :sort {attribute-name order, :_id order}
                   :limit 1}))))
 
-; If specified, 'conditions' must be a map containing a MongoDB/CongoMongo
-; expression
-; http://docs.mongodb.org/manual/reference/operator/and/
 (defn find-next
   "Returns the document (record) that follows the specified `document` when
   the documents matching `conditions` are ordered by `attribute-name`.
@@ -192,222 +186,6 @@
   (find-contiguous model-component document attribute-name conditions -1))
 
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;; Pagination
-
-(defn- generate-paging-conditions
-  [sort-order start]
-  ;; #TODO
-  ;; For the moment it assumes that sort-order has only 1 field. Add support
-  ;; for any number of sort-order fields.
-  (let [[sort-field-1-key sort-field-1-order]
-          (first sort-order)  ; sort-order is an array-map, so it's ordered
-        sort-field-1-value
-          ;; `sort-order` should have the same keys as `start`
-          ;; (except maybe :_id)
-          (when (seq sort-order) (sort-field-1-key start))
-        comparison-operator
-          (if (= sort-field-1-order 1) :$gt :$lt)
-        ;; assumes last element corresponds to the attribute used to
-        ;; disambiguate order, typically _id
-        id-comparison-operator
-          (if (= (val (last sort-order)) 1) :$gte :$lte)]
-    ;; `:sort` (sort-order) may not have been specified
-    ;; `start` may not have been specified
-    (if (and sort-order
-             (not (every? #{:_id} (keys sort-order)))
-             (seq start))
-      {:$or [{sort-field-1-key {comparison-operator sort-field-1-value}}
-             {:$and [{sort-field-1-key sort-field-1-value}
-                     {:_id {id-comparison-operator (:_id start)}}]}]}
-      (when (seq start)
-        {:_id {id-comparison-operator (:_id start)}}))))
-
-
-(defn- merge-conditions-with-and
-  "It also works when `conditions-1` and `conditions-2` are nil."
-  [conditions-1 conditions-2]
-  (if (and (seq conditions-1) (seq conditions-2))
-    {:$and [conditions-1 conditions-2]}
-    (if (seq conditions-1)
-      conditions-1
-      conditions-2)))
-
-
-(defn page
-  "Returns a page of the records specified by :where and ordered by :sort.
-  It implements \"range-based pagination\" [^1]. The desired page is
-  specified in the `start` parameter as a map with the values of the sort
-  fields [^2] that the first record in the page must match.
-
-  [^1] As recommended in MongoDB manual when discussing cursor.skip()
-  http://docs.mongodb.org/manual/reference/method/cursor.skip/
-  [^2]: Plus the :_id field if necessary to disambiguate
-
-  Ex.
-      (page post-component
-            ;; The default sort order is `:sort {:_id 1}`. If the :sort map
-            ;; has more than 1 element, it should be an array-map, which
-            ;; maintains key order.
-            ;; When the whole map is nil, it pages through all records with
-            ;; the default sort order.
-            {:where {:author_id <author_id>} :sort {:posted_at -1}}
-            ;; start, when it's nil the 1st page is returned
-            {:posted_at
-               (clj-time.coerce/from-string \"2015-08-25T14:37:30.947Z\")
-             :_id
-               (mongologic/to-object-id \"51b5da900364618037ff21e7\")}
-            ;; page-size
-            100)
-
-  Returns:
-      {:items (...)
-       :previous-page-start {...}
-       :next-page-start {...}}"
-  [{:keys [database entity] :as model-component}
-   {where :where sort-order :sort}
-   start
-   page-size]
-  (let [full-sort-order
-          ;; #TODO What happens when a explicit {:_id 1} sort order is
-          ;; specified? And if it's {:_id -1}?
-          ;;
-          ;; sort-order should be an array-map, and this adds `:_id 1` to the
-          ;; end of this array-map . It doesn't use
-          ;;   (into sort-order {:_id 1})
-          ;; because possibly that counts as a "modified" array map, which
-          ;; may not maintain the sort order.
-          ;; http://clojure.org/data_structures#Data Structures-ArrayMaps
-          (apply array-map (flatten (conj (vec sort-order) [:_id 1])))
-
-        paging-conditions
-          (generate-paging-conditions full-sort-order start)
-
-        records-batch
-          ;; Notice that...
-          ;; - `where` may be empty, when paging through all the records of
-          ;; the collection
-          ;; - `paging-conditions` may be empty, when the first page has to
-          ;; be served
-          ;; ...but merge-conditions-with-and will do the right thing in any
-          ;; case
-          (find model-component
-                {:where (merge-conditions-with-and where paging-conditions)
-                 :sort full-sort-order
-                 :limit (inc page-size)})
-
-        next-page-start
-          (when (> (clojure.core/count records-batch) page-size)
-                (select-keys (last records-batch) (keys full-sort-order)))
-        page-records
-          (if next-page-start (butlast records-batch) records-batch)
-
-        ;; (array-map :updated_at -1 :_id 1)
-        ;; =>
-        ;; (array-map :updated_at 1 :_id -1)
-        ;; The index will support the reverse order, see
-        ;; http://docs.mongodb.org/manual/core/index-compound/#sort-order
-        reverse-sort-order
-          (apply array-map
-                 (flatten (map (fn [[field order]] [field (* -1 order)])
-                               full-sort-order)))
-
-        prev-page-paging-conditions
-          (generate-paging-conditions reverse-sort-order start)
-        prev-page-records-batch
-          (when (seq start)
-            (find model-component
-                  {:where
-                     (merge-conditions-with-and where
-                                                prev-page-paging-conditions)
-                   :sort
-                     reverse-sort-order
-                   :limit
-                     (inc page-size)}))
-        prev-page-start
-          (when (seq start)
-            (when (> (clojure.core/count prev-page-records-batch) 1)
-              (select-keys (last prev-page-records-batch)
-                           (keys full-sort-order))))]
-
-    {:items page-records
-     :previous-page-start prev-page-start
-     :next-page-start next-page-start}))
-
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;; Validations
-
-; The uniqueness check is different depending on if the record is new or not.
-; Similar to Rails uniqueness validation
-; http://guides.rubyonrails.org/active_record_validations.html#uniqueness
-; http://api.rubyonrails.org/classes/ActiveRecord/Validations/ClassMethods.html#method-i-validates_uniqueness_of
-; See also Sequel's validates_unique
-; http://sequel.jeremyevans.net/rdoc/files/doc/validations_rdoc.html#label-validates_unique
-; http://en.wikipedia.org/wiki/Unique_key
-(defn unique?
-  "Checks that there are no other records in the collection corresponding to
-  model-component with the same values for the combination of fields
-  specified in unique-key-fields. The uniqueness constraint can be scoped to
-  records matching scope-conditions (the default scope is the whole
-  collection). Ex.
-
-      (unique? book-component
-               book-record
-               [:title :author_id]
-               {:status \"active\"})
-
-  If the record's attributes contain an :_id, it's assumed that these
-  attributes correspond to an existing record and the uniqueness check will
-  not take into account any record with that same :_id (so it will not take
-  itself into account)."
-  ; Notice that scope-conditions doesn't have to do with the Rails'
-  ; validate_uniqueness_of :scope parameter, but with the :conditions
-  ; parameter
-  ; http://api.rubyonrails.org/classes/ActiveRecord/Validations/ClassMethods.html#method-i-validates_uniqueness_of
-  ; I think the :scope parameter name in Rails is confusing. Others probably
-  ; think the same: Sequel uses the term "scope" in the context of its
-  ; validate_unique in the same sense as it's used here
-  ; http://sequel.jeremyevans.net/rdoc/files/doc/validations_rdoc.html#label-validates_unique
-  ;
-  [model-component attributes unique-key-fields & [scope-conditions]]
-  (let [_id
-          (:_id attributes)
-        unique-fields-conditions
-          ; if attributes is {:author_id 123}
-          ; unique-key-fields is [:title :author_id]
-          ; =>
-          ; {:title nil :author_id 123}
-          ; http://stackoverflow.com/a/5543309
-          ;
-          ; Notice that in MongoDB a query like { title: null } matches
-          ; documents that either contain the 'title' field whose value is
-          ; null or that do not contain the title field.
-          ; http://docs.mongodb.org/manual/faq/developers/#faq-developers-query-for-nulls
-          (merge (zipmap unique-key-fields (repeat nil))
-                 (select-keys attributes unique-key-fields))]
-    ; In the most nested merge, if
-    ; attributes is {:author_id 123}
-    ; unique-key-fields is [:title :author_id]
-    ; =>
-    ; {:title nil :author_id 123}
-    ; http://stackoverflow.com/a/5543309
-    ;
-    ; Notice that in MongoDB a query like { title: null } matches documents
-    ; that either contain the 'title' field whose value is null or that do
-    ; not contain the title field.
-    ; http://docs.mongodb.org/manual/faq/developers/#faq-developers-query-for-nulls
-    (not (find-one
-           model-component
-           (merge-conditions-with-and
-             (merge unique-fields-conditions
-                    (when _id {:_id {:$ne (to-object-id _id)}}))
-             scope-conditions)))))
-
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-
 (defn update-all
   "Applies the specified `updates` to all the records that match the
   `conditions`. The `updates` have to specify the update operator to use
@@ -417,38 +195,29 @@
 
   The `conditions` MUST be supplied, to prevent the accidental update of all
   the records in a collection. If that's really what's desired, an empty map
-  can be passed as the 'conditions' parameter.
+  can be passed as the `conditions` parameter.
 
   Example:
     (update-all product-component
                 {:$set {:name \"changed\"}}
                 {:name \"test name\"})"
-  ; Similar to ActiveRecord's update_all(updates, conditions = nil, options = {})
-  ; http://api.rubyonrails.org/classes/ActiveRecord/Relation.html#method-i-update_all
-  ; but here, contrary to Rails, the conditions MUST be supplied.
-  ; See also Mongoid's update_all
-  ; http://mongoid.org/en/mongoid/docs/querying.html#query_plus
-  ;
-  ; https://github.com/aboekhoff/congomongo/blob/master/src/somnium/congomongo.clj
-  ; CongoMongo calls
-  ; http://api.mongodb.org/java/current/com/mongodb/DBCollection.html#update(com.mongodb.DBObject, com.mongodb.DBObject, boolean, boolean, com.mongodb.WriteConcern)
-  ; which corresponds to this in the mongo shell interface
-  ; http://docs.mongodb.org/manual/core/write-operations-introduction/#update
+  ;; CongoMongo
+  ;; https://github.com/aboekhoff/congomongo/blob/master/src/somnium/congomongo.clj
+  ;; calls
+  ;; http://api.mongodb.org/java/current/com/mongodb/DBCollection.html#update-com.mongodb.DBObject-com.mongodb.DBObject-boolean-boolean-com.mongodb.WriteConcern-
+  ;; which corresponds to this in the mongo shell interface
+  ;; http://docs.mongodb.org/manual/core/write-operations-introduction/#update
   [{:keys [database entity] :as model-component} updates conditions]
   (db/with-mongo (:connection database)
     (db/update! (:collection entity) conditions updates :multiple true)))
 
-; Mongologic, like Rails' ActiveRecord, allows to hook more than one
-; function into the same slot in the record's life cycle.
-; http://books.google.es/books?id=slwLAqkT_Y0C&lpg=PT397&ots=9b2wBJjAxO&dq=callback%20queue%20rails&pg=PT397#v=onepage&q=callback%20queue%20rails&f=false
-; (For the moment, Mongologic only allows this for :after-update)
+
 (defn- compose-callback-fns
   [callback-fns model-component original-record]
   (let [callback-fns
-          ;; http://stackoverflow.com/a/11782628
           (if (instance? clojure.lang.Atom callback-fns)
-              (deref callback-fns)
-              callback-fns)]
+            (deref callback-fns)
+            callback-fns)]
     (when callback-fns
       ;; The use of anonymous functions below (`fn`) solves the problem of
       ;; argument order when using partial, as is also explained in
@@ -459,6 +228,7 @@
                     (f model-component changed-record original-record))))
            reverse
            (apply comp)))))
+
 
 (defn- compose-delete-callback-fns
   [callback-fns entity]
@@ -479,16 +249,14 @@
 (defn update
   "If the record resulting from the update is valid, it timestamps and saves
   the updated record. If there are no changes, nothing is saved.
-  It's similar to ActiveRecord's update(id, attributes)
-  http://api.rubyonrails.org/classes/ActiveRecord/Relation.html#method-i-update
 
   Only the $unset \"update operator\" is supported.
   http://docs.mongodb.org/manual/reference/operators/#update
 
   $unset allows to delete fields. To delete a field, specify :$unset as its
   new value. Example:
-#TODO Fix example, it should be passed a component
-    (update {:collection :users}
+
+    (update user-component
             23
             {:password \"s3cret\" :password_reset_code :$unset})
 
@@ -576,10 +344,7 @@
       ; Notice that if "write concern" were not set to :safe (see
       ; models.clj), MongoDB Java driver would never raise any exception.
 
-      ; Updates and timestamps the record ONLY IF there are changes,
-      ; like Rails
-      ; https://github.com/rails/rails/blob/master/activerecord/lib/active_record/timestamp.rb
-      ;
+      ;; Updates and timestamps the record ONLY IF there are changes
       (let [before-save-fn (or (:before-save entity) empty-callback-fn)
             prepared-record (before-save-fn model-component changed-record)]
         ;; Note that, because of how prepared-record is obtained, here it has
@@ -662,6 +427,194 @@
                   [true (composed-after-update-fn updated-record)]
                   [true updated-record])
                 [false {:base [:update-error]}])))))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; Pagination
+
+(defn- generate-paging-conditions
+  [sort-order start]
+  ;; For the moment it assumes that sort-order has only 1 field
+  ;; #TODO Add support for any number of sort-order fields.
+  (let [[sort-field-1-key sort-field-1-order]
+          (first sort-order)  ; sort-order is an array-map, so it's ordered
+        sort-field-1-value
+          ;; `sort-order` should have the same keys as `start`
+          ;; (except maybe :_id)
+          (when (seq sort-order) (sort-field-1-key start))
+        comparison-operator
+          (if (= sort-field-1-order 1) :$gt :$lt)
+        ;; assumes last element corresponds to the attribute used to
+        ;; disambiguate order, typically _id
+        id-comparison-operator
+          (if (= (val (last sort-order)) 1) :$gte :$lte)]
+    ;; `:sort` (sort-order) may not have been specified
+    ;; `start` may not have been specified
+    (if (and sort-order
+             (not (every? #{:_id} (keys sort-order)))
+             (seq start))
+      {:$or [{sort-field-1-key {comparison-operator sort-field-1-value}}
+             {:$and [{sort-field-1-key sort-field-1-value}
+                     {:_id {id-comparison-operator (:_id start)}}]}]}
+      (when (seq start)
+        {:_id {id-comparison-operator (:_id start)}}))))
+
+
+(defn- merge-conditions-with-and
+  "It also works when `conditions-1` and `conditions-2` are nil."
+  [conditions-1 conditions-2]
+  (if (and (seq conditions-1) (seq conditions-2))
+    {:$and [conditions-1 conditions-2]}
+    (if (seq conditions-1)
+      conditions-1
+      conditions-2)))
+
+
+(defn page
+  "Returns a page of the records specified by :where and ordered by :sort.
+  It implements \"range-based pagination\" [^1]. The desired page is
+  specified in the `start` parameter as a map with the values of the sort
+  fields [^2] that the first record in the page must match.
+
+  [^1] As recommended in MongoDB manual when discussing cursor.skip()
+  http://docs.mongodb.org/manual/reference/method/cursor.skip/
+  [^2]: Plus the :_id field if necessary to disambiguate
+
+  Ex.
+      (page post-component
+            ;; The default sort order is `:sort {:_id 1}`. If the :sort map
+            ;; has more than 1 element, it should be an array-map, which
+            ;; maintains key order.
+            ;; When the whole map is nil, it pages through all records with
+            ;; the default sort order.
+            {:where {:author_id <author_id>} :sort {:posted_at -1}}
+            ;; start, when it's nil the 1st page is returned
+            {:posted_at
+               (clj-time.coerce/from-string \"2015-08-25T14:37:30.947Z\")
+             :_id
+               (mongologic/to-object-id \"51b5da900364618037ff21e7\")}
+            ;; page-size
+            100)
+
+  Returns:
+      {:items (...)
+       :previous-page-start {...}
+       :next-page-start {...}}"
+  [{:keys [database entity] :as model-component}
+   {where :where sort-order :sort}
+   start
+   page-size]
+  (let [full-sort-order
+          ;; #TODO What happens when a explicit {:_id 1} sort order is
+          ;; specified? And if it's {:_id -1}?
+          ;;
+          ;; sort-order should be an array-map, and this adds `:_id 1` to the
+          ;; end of this array-map . It doesn't use
+          ;;   (into sort-order {:_id 1})
+          ;; because possibly that counts as a "modified" array map, which
+          ;; may not maintain the sort order.
+          ;; http://clojure.org/data_structures#Data Structures-ArrayMaps
+          (apply array-map (flatten (conj (vec sort-order) [:_id 1])))
+
+        paging-conditions
+          (generate-paging-conditions full-sort-order start)
+
+        records-batch
+          ;; Notice that...
+          ;; - `where` may be empty, when paging through all the records of
+          ;;   the collection
+          ;; - `paging-conditions` may be empty, when the first page has to
+          ;;    be served
+          ;; ...but merge-conditions-with-and will do the right thing in any
+          ;; case
+          (find model-component
+                {:where (merge-conditions-with-and where paging-conditions)
+                 :sort full-sort-order
+                 :limit (inc page-size)})
+
+        next-page-start
+          (when (> (clojure.core/count records-batch) page-size)
+            (select-keys (last records-batch) (keys full-sort-order)))
+        page-records
+          (if next-page-start (butlast records-batch) records-batch)
+
+        ;; (array-map :updated_at -1 :_id 1)
+        ;; =>
+        ;; (array-map :updated_at 1 :_id -1)
+        ;; The index will support the reverse order, see
+        ;; http://docs.mongodb.org/manual/core/index-compound/#sort-order
+        reverse-sort-order
+          (apply array-map
+                 (flatten (map (fn [[field order]] [field (* -1 order)])
+                               full-sort-order)))
+
+        prev-page-paging-conditions
+          (generate-paging-conditions reverse-sort-order start)
+        prev-page-records-batch
+          (when (seq start)
+            (find model-component
+                  {:where
+                     (merge-conditions-with-and where
+                                                prev-page-paging-conditions)
+                   :sort
+                     reverse-sort-order
+                   :limit
+                     (inc page-size)}))
+        prev-page-start
+          (when (and (seq start)
+                     (> (clojure.core/count prev-page-records-batch) 1))
+            (select-keys (last prev-page-records-batch)
+                         (keys full-sort-order)))]
+
+    {:items page-records
+     :previous-page-start prev-page-start
+     :next-page-start next-page-start}))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; Validations
+
+(defn unique?
+  "Checks that there are no other records in the collection corresponding to
+  model-component with the same values for the combination of fields
+  specified in unique-key-fields. The uniqueness constraint can be scoped to
+  records matching scope-conditions (the default scope is the whole
+  collection). Ex.
+
+      (unique? book-component
+               book-record
+               [:title :author_id]
+               {:status \"active\"})
+
+  If the record's attributes contain an :_id, it's assumed that these
+  attributes correspond to an existing record and the uniqueness check will
+  not take into account any record with that same :_id (so it will not take
+  itself into account)."
+  [model-component attributes unique-key-fields & [scope-conditions]]
+  (let [_id
+          (:_id attributes)
+        unique-fields-conditions
+          ;; if attributes is {:author_id 123}
+          ;; unique-key-fields is [:title :author_id]
+          ;; =>
+          ;; {:title nil :author_id 123}
+          ;; http://stackoverflow.com/a/5543309
+          ;;
+          ;; Notice that in MongoDB a query like { title: null } matches
+          ;; documents that either contain the 'title' field whose value is
+          ;; null or that do not contain the title field.
+          ;; http://docs.mongodb.org/manual/faq/developers/#faq-developers-query-for-nulls
+          (merge (zipmap unique-key-fields (repeat nil))
+                 (select-keys attributes unique-key-fields))]
+    (not (find-one
+          model-component
+          (merge-conditions-with-and
+           (merge unique-fields-conditions
+                  (when _id {:_id {:$ne (to-object-id _id)}}))
+           scope-conditions)))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 
 (defn delete-all
