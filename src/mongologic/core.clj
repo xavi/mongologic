@@ -247,8 +247,10 @@
 
 
 (defn update
-  "If the record resulting from the update is valid, it timestamps and saves
-  the updated record. If there are no changes, nothing is saved.
+  "If validation succeeds for the record specified by `id` with the changed
+  `attributes`, the resulting record is saved (with an automatically
+  :updated_at timestamp, unless it's explicitly changed). If `attributes` are
+  not really changing anything, nothing is saved.
 
   Only the $unset \"update operator\" is supported.
   http://docs.mongodb.org/manual/reference/operators/#update
@@ -278,17 +280,18 @@
   callbacks must return the entire record, maybe with some attributes
   changed, added, or deleted.
 
-  For :on-update-errors to work, WriteConcern.ACKNOWLEDGED (vs
-  UNACKNOWLEDGED) must be used
-  (`(set-write-concern *mongo-config* :acknowledged)`), as otherwise errors
-  don't cause exceptions, and (currently) Mongologic only calls this callback
-  if an exception occurs.
+  With MongoDB's default ACKNOWLEDGED value for WriteConcern [^1], the
+  :on-update-errors callback is called when there are network issues or
+  database server errors (ex. com.mongodb.DuplicateKeyException).
+
+  [^1]: http://docs.mongodb.org/manual/core/write-concern/#default-write-concern
 
   Returns:
     - [false validation-errors] if validations fail (where validation-errors
-    is what the validator returned)
-    - [false nil] if no record is found with the specified id, or the update
-    fails
+      is what the validator returned)
+    - [false validation-errors] if no record is found with the specified id
+    - [false {:base [:update-error]}] if update fails because of network
+      issues or database server errors
     - [true updated-object] otherwise"
   [{:keys [database entity] :as model-component}
    id
@@ -336,14 +339,6 @@
             (and validate (validate model-component changed-record)))]
     (if (or (nil? old-record) (seq validation-errors))
       [false validation-errors]
-      ; CongoMongo's update! returns a WriteResult object from the
-      ; underlying Java driver
-      ; https://github.com/aboekhoff/congomongo/blob/master/src/somnium/congomongo.clj
-      ; https://github.com/mongodb/mongo-java-driver/blob/master/src/main/com/mongodb/DBCollection.java
-      ;
-      ; Notice that if "write concern" were not set to :safe (see
-      ; models.clj), MongoDB Java driver would never raise any exception.
-
       ;; Updates and timestamps the record ONLY IF there are changes
       (let [before-save-fn (or (:before-save entity) empty-callback-fn)
             prepared-record (before-save-fn model-component changed-record)]
@@ -353,11 +348,11 @@
         ;; determine if the record has to be actually updated using the
         ;; condition below. (If it has, updated_at will be properly set
         ;; later.)
-        (if (= prepared-record old-record)  ;; #TODO AND (empty? unset-map) ?
+        (if (= prepared-record old-record)
 
             [true old-record]
 
-            (let [changed-record  ; overrides the outer changed-record,
+            (let [changed-record  ; overrides the outer changed-record
                     (if-let [before-update-fn (:before-update entity)]
                       (before-update-fn model-component prepared-record)
                       prepared-record)
@@ -387,33 +382,30 @@
                            (when (seq unset-map) {:$unset unset-map}))
                   updated-record
                     (try
-                      ; The second argument of MongoDB's update (the 3rd in
-                      ; CongoMongo) is the "updated object or $ operators
-                      ; (e.g., $inc) which manipulate the object"
-                      ; http://www.mongodb.org/display/DOCS/Updating#Updating-update%28%29
-                      ; Notice that an "updated object" represents a whole
-                      ; document, not only the fields that have to be modified.
-                      ; This updated object will completely replace the old
-                      ; object. To modify only some fields, the $ modifiers have
-                      ; to be used.
-                      ;
+                      ;; The second argument of MongoDB's update (the 3rd in
+                      ;; CongoMongo) is the "updated object or $ operators
+                      ;; (e.g., $inc) which manipulate the object"
+                      ;; http://www.mongodb.org/display/DOCS/Updating#Updating-update%28%29
+                      ;; Notice that an "updated object" represents a whole
+                      ;; document, not only the fields that have to be
+                      ;; modified. This updated object will completely
+                      ;; replace the old object. To modify only some fields,
+                      ;; the $ modifiers have to be used.
                       (db/with-mongo (:connection database)
                         (db/update! (:collection entity)
-                                    old-record modifications))
-                      ; CongoMongo's update! returns a WriteResult
-                      ; https://github.com/aboekhoff/congomongo#update
-                      ; but the updated record has to be returned, that's why
-                      ; it has to retrieved from the database
+                                    old-record
+                                    modifications))
+                      ;; CongoMongo's update! returns a WriteResult from the
+                      ;; underlying Java driver
+                      ;;   https://github.com/aboekhoff/congomongo#update
+                      ;; but the updated record has to be returned, that's
+                      ;; why it has to retrieved from the database
                       (find-by-id model-component id)
                       (catch Exception e
                         (log/info (str "log-message=\"in update\" exception="
                                        e " collection=" (:collection entity)
                                        " old-record=" old-record
                                        " modifications=" modifications))
-                        ; :on-update-errors is similar to Rails'
-                        ; after_rollback, but not exactly because MongoDB
-                        ; doesn't have transactions
-                        ; http://guides.rubyonrails.org/active_record_callbacks.html#transaction-callbacks
                         (when-let [on-update-errors-fn (:on-update-errors entity)]
                           (on-update-errors-fn model-component changed-record))
                         nil))]
@@ -624,23 +616,15 @@
   (let [result
           (db/with-mongo (:connection database)
             (db/destroy! (:collection entity) query))]
-    ;; WriteResult changed in version 2.6 but MongoLab is still running mongod 2.4.9 (2014-11-16)
-    ;; http://docs.mongodb.org/manual/reference/method/db.collection.remove/#writeresult
-    ;; According to that shell command documentation, WriteResult should
-    ;; contain the number of documents removed in "nRemoved", but it seems
-    ;; that's shell-specific, because Java driver's WriteResult doesn't have
-    ;; anything about "nRemoved", but instead
-    ;; http://api.mongodb.org/java/current/com/mongodb/WriteResult.html#getN()
     (.getN result)))
 
+
 (defn delete
-  ; Named after the equivalent Rails method
-  ; http://api.rubyonrails.org/classes/ActiveRecord/Relation.html#method-i-delete
   "If the id parameter is a String, it's automatically converted to an
   ObjectId.
 
-  These callbacks will be called, in the order listed here, if defined in
-  the `entity` parameter:
+  These callbacks will be called, in the order listed here, if defined in the
+  map under the :entity key of the `model-component` parameter:
 
   - :before-delete
   - :after-delete
@@ -648,30 +632,35 @@
   Returns:
     - the number of records deleted"
   [{:keys [database entity] :as model-component} id]
-  ;
-  ; #TODO
-  ; 2014-11-16: Review the implementation below, maybe destroy! actually
-  ; allows to know if anything was deleted, see `delete-all` above.
-  ;
-  ; CongoMongo's destroy! function (which uses the remove method of
-  ; MongoDB's Java driver) is the most obvious way to delete a document but
-  ; it doesn't allow to know if anything was deleted. Actually, it does, but
-  ; only if the "write concern" is set to :safe, and by inspecting the
-  ; WriteResult Java object that it returns.
-  ;
-  ; Because of this, the more general command function is used, as it allows
-  ; to know the number of documents deleted independently of the
-  ; "write concern", and it doesn't require messing with Java.
-  ;
-  ; If nothing was deleted, there's no :lastErrorObject, otherwise it contains
-  ; an :n element with the number of documents deleted.
-  ;   http://www.mongodb.org/display/DOCS/getLastError+Command
-  ;
-  ; CongoMongo provides a fetch-and-modify function that wraps MongoDB's
-  ; findAndModify command, but I don't see the value of it, and I prefer to
-  ; use the generic command function.
-  ; "The findAndModify command modifies and returns a single document."
-  ; http://docs.mongodb.org/manual/reference/command/findAndModify/
+  ;; CongoMongo's destroy! function (which uses the remove method of
+  ;; MongoDB's Java driver) is the most obvious way to delete a document, but
+  ;; when the "write concern" is set to :unacknowledged (default is
+  ;; :acknowledged though), it doesn't allow to know if anything was deleted.
+  ;; For other (stronger) "write concerns" it's possible to know the number
+  ;; of documents deleted by inspecting the WriteResult Java object that it
+  ;; returns.
+  ;;
+  ;; Because of that, the more general command function is used, as it allows
+  ;; to know the number of documents deleted independently of the "write
+  ;; concern", and it doesn't require messing with Java.
+  ;;
+  ;; If nothing was deleted, there's no :lastErrorObject, otherwise it
+  ;; contains an :n element with the number of documents deleted.
+  ;;
+  ;; #TODO
+  ;; Review the implementation of this function in light of...
+  ;;
+  ;; > Changed in version 2.6: A new protocol for write operations integrates
+  ;; > write concerns with the write operations, eliminating the need for a
+  ;; > separate getLastError. Most write methods now return the status of the
+  ;; > write operation, including error information.
+  ;; http://docs.mongodb.org/manual/reference/command/getLastError/
+  ;;
+  ;; CongoMongo provides a fetch-and-modify function that wraps MongoDB's
+  ;; findAndModify command, but I don't see the value of it, and I prefer to
+  ;; use the generic command function.
+  ;; "The findAndModify command modifies and returns a single document."
+  ;; http://docs.mongodb.org/manual/reference/command/findAndModify/
   (let [collection (:collection entity)
         id (if (string? id) (to-object-id id) id)
         record (find-by-id model-component id)
@@ -681,40 +670,10 @@
         command-result
           (db/with-mongo (:connection database)
             ;; https://github.com/aboekhoff/congomongo/blob/master/src/somnium/congomongo.clj
-            ;; http://api.mongodb.org/java/current/com/mongodb/DB.html#command(com.mongodb.DBObject)
+            ;; http://api.mongodb.org/java/current/com/mongodb/DB.html#command-com.mongodb.DBObject-
             (db/command {:findAndModify (name collection)
                          :query {:_id id}
                          :remove true}))]
-    ; Considered to support an :on-delete-errors callback. In Ruby on Rails
-    ; this would be handled in a generic after_rollback callback.
-    ; Notice that if the record to delete is not found, that's not an error.
-    ; http://stackoverflow.com/q/14985478
-    ; But in a transactional database, although not in MongoDB, a DELETE
-    ; could fail because of a foreign key constraint.
-    ; Tried to make the delete fail by specifying a non-existing collection,
-    ; but the result was the same as when the record to delete is not found.
-    ; {:serverUsed "ds029267.mongolab.com/23.22.107.129:29267",
-    ;  :value nil,
-    ;  :ok 1.0}
-
-    ; In an unrelated note, if an equivalent to Rails' after_remove [^1]
-    ; callback is ever considered, be aware of this behavior in Rails...
-    ; "after_remove callback is run even though the record was not actually
-    ; removed."
-    ; https://github.com/rails/rails/pull/9346
-    ; Actually it seems that is also true for after_destroy...
-    ; "In general I think it would be correct to make this general behavior
-    ; so that after_destroy callbacks are not called if no record was
-    ; deleted."
-    ; https://groups.google.com/forum/#!topic/rubyonrails-core/cl20eykvNsQ
-    ; That thread is from 2012, I don't understand why there's no mention
-    ; about `destroyed?` (see TODO at the start of this function).
-    ;
-    ; [^1]: after_remove is different than after_destroy
-    ; http://guides.rubyonrails.org/association_basics.html#association-callbacks
-    ; http://guides.rubyonrails.org/active_record_callbacks.html#destroying-an-object
-
-
     (when-let [composed-after-delete-fn
                  (compose-delete-callback-fns (:after-delete entity)
                                               model-component)]
@@ -723,49 +682,50 @@
     (or (get-in command-result [:lastErrorObject :n]) 0)))
 
 
-; In MySQL, DATE() can be used to extract the date part of a datetime
-; http://dev.mysql.com/doc/refman/5.7/en/date-and-time-functions.html#function_date
-; In PostgreSQL there's DATE_TRUNC()
-; http://www.postgresql.org/docs/9.3/static/functions-datetime.html#FUNCTIONS-DATETIME-TRUNC
-; In MongoDB there's no equivalent function.
-;
-; In Rails there's beginning_of_day()
-; http://api.rubyonrails.org/classes/DateTime.html#method-i-beginning_of_day
-;
-; JavaScript's getTimezoneOffset() returns the offset in minutes
-; https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Date/getTimezoneOffset
-; Rails' utc_offset() returns the offset in seconds
-; http://api.rubyonrails.org/classes/DateTime.html#method-i-utc_offset
-; MongoDB's $add operator expects milliseconds
-; https://jira.mongodb.org/browse/SERVER-6239
 (defn beginning-of-day
   "Returns a map, to be used in the context of CongoMongo's interface to
-  MongoDB's aggregation framework, to get a Date value with the same day as
-  the one resulting from adding utc-offset-in-milliseconds to the specified
-  date-field (expected as a keyword, like in :field-name), but with a time of
-  0:00 .
+  MongoDB's aggregation framework [^1][^2], to get a Date value with the same
+  day as the one resulting from adding utc-offset-in-milliseconds to the
+  specified date-field (expected as a keyword, like in :field-name), but with
+  a time of 0:00 .
 
-  #TODO Provide an example
+  Ex.
 
-  http://docs.mongodb.org/manual/core/aggregation-pipeline/
-  https://github.com/aboekhoff/congomongo#aggregation-requires-mongodb-22-or-later
-  "
+      (beginning-of-day :created_at 7200000)
+      =>
+      {:$subtract
+         [{:$add [\"$created_at\" 7200000]}
+          {:$add [{:$millisecond [{:$add [\"$created_at\" 7200000]}]}
+                  {:$multiply [{:$second [{:$add [\"$created_at\" 7200000]}]}
+                               1000]}
+                  {:$multiply [{:$minute [{:$add [\"$created_at\" 7200000]}]}
+                               60
+                               1000]}
+                  {:$multiply [{:$hour [{:$add [\"$created_at\" 7200000]}]}
+                               60
+                               60
+                               1000]}]}]}
+
+  [^1]: https://github.com/aboekhoff/congomongo#aggregation-requires-mongodb-22-or-later
+  [^2]: http://docs.mongodb.org/manual/core/aggregation-pipeline/"
   [date-field utc-offset-in-milliseconds]
-  ; Ideally, a time-zone would be specified instead of
-  ; utc-offset-in-milliseconds. Then the datetime stored in the database as
-  ; UTC could be converted to local time with that time zone, taking into
-  ; account daylight saving time. Unfortunately, as of version 2.4 of
-  ; MongoDB, it seems there's no way to convert a date to a given time zone
-  ; in the context of the aggregation framework.
-  ;
-  ; http://www.kamsky.org/1/post/2013/03/stupid-date-tricks-with-aggregation-framework.html
-  ; http://docs.mongodb.org/manual/reference/aggregation/operator-nav/
+  ;; Ideally, a time-zone would be specified instead of
+  ;; utc-offset-in-milliseconds. Then a datetime stored in the database as
+  ;; UTC could be converted to local time with that time zone, taking into
+  ;; account daylight saving time. Unfortunately, as of version 2.4 of
+  ;; MongoDB, it seems there's no way to convert a date to a given time zone
+  ;; in the context of the aggregation framework.
+  ;;
+  ;; http://www.kamsky.org/1/post/2013/03/stupid-date-tricks-with-aggregation-framework.html
+  ;;
+  ;; http://docs.mongodb.org/manual/reference/operator/aggregation/
   (let [field (str "$" (name date-field))
         offset-date-time {:$add [field utc-offset-in-milliseconds]}
-        ; the wrapping of $add in an array is a temporary work around to a
-        ; MongoDB bug that should be fixed in version 2.6
-        ; https://jira.mongodb.org/browse/SERVER-6310?focusedCommentId=431343&page=com.atlassian.jira.plugin.system.issuetabpanels:comment-tabpanel#comment-431343
-        ; http://stackoverflow.com/questions/5082850/whats-the-convention-for-using-an-asterisk-at-the-end-of-a-function-name-in-clo
+        ;; The wrapping of $add in an array is a temporary work around to a
+        ;; MongoDB bug that should be fixed in version 2.6
+        ;; https://jira.mongodb.org/browse/SERVER-6310?focusedCommentId=431343&page=com.atlassian.jira.plugin.system.issuetabpanels:comment-tabpanel#comment-431343
+        ;; #TODO See if it's possible to get rid of this wrapping now that
+        ;; MongoDB is at version 3
         offset-date-time* [offset-date-time]]
     {:$subtract [offset-date-time
                  {:$add [{:$millisecond offset-date-time*}
