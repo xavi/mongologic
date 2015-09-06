@@ -97,7 +97,6 @@
           (is (= (select-keys resulting-record [:_id :isbn])
                  expected-book1)))))))
 
-;; https://github.com/rails/rails/blob/master/activerecord/test/cases/validations/uniqueness_validation_test.rb
 (deftest test-unique-validation
   (let [component
           {:database {:connection conn}
@@ -144,13 +143,6 @@
            (mongologic/create component book1))
         "Should return :insert-error")))
 
-
-;; Based on Rathore's "Clojure in Action",
-;; Chapter 10: Test-driven development and more
-;; https://aphyr.com/posts/306-clojure-from-the-ground-up-state
-;; Rails callbacks testing
-;; https://github.com/rails/rails/blob/master/activerecord/test/cases/callbacks_test.rb
-
 (deftest test-update-error
   ;; #TODO DRY, also used in test-create-insertion-error
   (congomongo/with-mongo conn
@@ -189,42 +181,4 @@
                  {:_id (:_id book1) :isbn (:isbn book2)})
               (str "Should have called the callback with the changed (but "
                    "unsaved) record as the second argument")))))))
-
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-;; "If you want a report of passing tests; you can run with the TAP output 
-;; adapter in clojure.test.tap. "
-;; https://groups.google.com/d/msg/clojure/cwjf2dSg9mQ/_2_Wj90aVlMJ
-;; http://clojure.github.io/clojure/clojure.test-api.html#clojure.test.tap
-;;
-;; (use 'clojure.test)
-;; (use 'clojure.test.tap)
-;; (use 'mongologic.core-test)
-;; (with-tap-output (run-tests 'mongologic.core-test))
-;;
-;; BUT this method is probably better (see http://stackoverflow.com/a/24337705)
-;;
-;; (require '[clojure.test :refer [run-tests]])
-;; (require 'mongologic.core-test)   ;; I expected this to not be necessary, but it is
-;; (run-tests 'mongologic.core-test)
-;;
-;; #TOLEARN
-;; When tests are changed, they have to be reloaded for the REPL to pick up
-;; the changes. They can be reloaded with
-;; (require 'mongologic.core-test :reload)
-;; or
-;; (require 'mongologic.core-test :reload-all)
-;;
-;; Difference being... 
-; :reload forces loading of all the identified libs even if they are
-;   already loaded
-; :reload-all implies :reload and also forces loading of all libs that the
-;   identified libs directly or indirectly load via require or use
-
-;; #TOLEARN
-;; Run just 1 test
-;;  (clojure.test/test-vars [#'the-ns/the-test])
-;; http://stackoverflow.com/questions/24970853/run-one-clojure-test-not-all-tests-in-a-namespace-with-fixtures-from-the-rep
-;; <= Notice that if no failures nothing is printed
 
