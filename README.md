@@ -21,7 +21,7 @@ Add this to your project's dependencies:
 
 ## Documentation
 
-- [API Docs](http://xavi.github.com/mongologic)
+- [API Docs](http://xavi.github.io/mongologic)
 
 
 ## Usage
