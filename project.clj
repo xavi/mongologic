@@ -1,4 +1,4 @@
-(defproject mongologic "0.5.0"
+(defproject mongologic "0.5.1"
   :description "Toolkit to develop MongoDB apps with Clojure"
   :url "https://github.com/xavi/mongologic"
   :license {:name "Eclipse Public License"
@@ -8,5 +8,5 @@
                  [clj-time "0.10.0"]
                  [com.taoensso/timbre "4.1.0"]]
   :plugins [[codox "0.8.13"]]
-  :codox {:src-dir-uri "https://github.com/xavi/mongologic/blob/0.5.0/"
+  :codox {:src-dir-uri "https://github.com/xavi/mongologic/blob/0.5.1/"
           :src-linenum-anchor-prefix "L"})
