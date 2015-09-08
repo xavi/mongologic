@@ -421,6 +421,79 @@
                 [false {:base [:update-error]}])))))))
 
 
+(defn delete
+  "If the id parameter is a String, it's automatically converted to an
+  ObjectId.
+
+  These callbacks will be called, in the order listed here, if defined in the
+  map under the :entity key of the `model-component` parameter:
+
+  - :before-delete
+  - :after-delete
+
+  Returns:
+    - the number of records deleted"
+  [{:keys [database entity] :as model-component} id]
+  ;; CongoMongo's destroy! function (which uses the remove method of
+  ;; MongoDB's Java driver) is the most obvious way to delete a document, but
+  ;; when the "write concern" is set to :unacknowledged (default is
+  ;; :acknowledged though), it doesn't allow to know if anything was deleted.
+  ;; For other (stronger) "write concerns" it's possible to know the number
+  ;; of documents deleted by inspecting the WriteResult Java object that it
+  ;; returns.
+  ;;
+  ;; Because of that, the more general command function is used, as it allows
+  ;; to know the number of documents deleted independently of the "write
+  ;; concern", and it doesn't require messing with Java.
+  ;;
+  ;; If nothing was deleted, there's no :lastErrorObject, otherwise it
+  ;; contains an :n element with the number of documents deleted.
+  ;;
+  ;; #TODO
+  ;; Review the implementation of this function in light of...
+  ;;
+  ;; > Changed in version 2.6: A new protocol for write operations integrates
+  ;; > write concerns with the write operations, eliminating the need for a
+  ;; > separate getLastError. Most write methods now return the status of the
+  ;; > write operation, including error information.
+  ;; http://docs.mongodb.org/manual/reference/command/getLastError/
+  ;;
+  ;; CongoMongo provides a fetch-and-modify function that wraps MongoDB's
+  ;; findAndModify command, but I don't see the value of it, and I prefer to
+  ;; use the generic command function.
+  ;; "The findAndModify command modifies and returns a single document."
+  ;; http://docs.mongodb.org/manual/reference/command/findAndModify/
+  (let [collection (:collection entity)
+        id (if (string? id) (to-object-id id) id)
+        record (find-by-id model-component id)
+        _
+          (when-let [before-delete-fn (:before-delete entity)]
+            (before-delete-fn model-component record))
+        command-result
+          (db/with-mongo (:connection database)
+            ;; https://github.com/aboekhoff/congomongo/blob/master/src/somnium/congomongo.clj
+            ;; http://api.mongodb.org/java/current/com/mongodb/DB.html#command-com.mongodb.DBObject-
+            (db/command {:findAndModify (name collection)
+                         :query {:_id id}
+                         :remove true}))]
+    (when-let [composed-after-delete-fn
+                 (compose-delete-callback-fns (:after-delete entity)
+                                              model-component)]
+      (composed-after-delete-fn record))
+
+    (or (get-in command-result [:lastErrorObject :n]) 0)))
+
+
+(defn delete-all
+  "Returns:
+     - the number of records deleted"
+  [{:keys [database entity] :as model-component} query]
+  (let [result
+          (db/with-mongo (:connection database)
+            (db/destroy! (:collection entity) query))]
+    (.getN result)))
+
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Pagination
 
@@ -607,80 +680,7 @@
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-
-(defn delete-all
-  "Returns:
-     - the number of records deleted"
-  [{:keys [database entity] :as model-component} query]
-  (let [result
-          (db/with-mongo (:connection database)
-            (db/destroy! (:collection entity) query))]
-    (.getN result)))
-
-
-(defn delete
-  "If the id parameter is a String, it's automatically converted to an
-  ObjectId.
-
-  These callbacks will be called, in the order listed here, if defined in the
-  map under the :entity key of the `model-component` parameter:
-
-  - :before-delete
-  - :after-delete
-
-  Returns:
-    - the number of records deleted"
-  [{:keys [database entity] :as model-component} id]
-  ;; CongoMongo's destroy! function (which uses the remove method of
-  ;; MongoDB's Java driver) is the most obvious way to delete a document, but
-  ;; when the "write concern" is set to :unacknowledged (default is
-  ;; :acknowledged though), it doesn't allow to know if anything was deleted.
-  ;; For other (stronger) "write concerns" it's possible to know the number
-  ;; of documents deleted by inspecting the WriteResult Java object that it
-  ;; returns.
-  ;;
-  ;; Because of that, the more general command function is used, as it allows
-  ;; to know the number of documents deleted independently of the "write
-  ;; concern", and it doesn't require messing with Java.
-  ;;
-  ;; If nothing was deleted, there's no :lastErrorObject, otherwise it
-  ;; contains an :n element with the number of documents deleted.
-  ;;
-  ;; #TODO
-  ;; Review the implementation of this function in light of...
-  ;;
-  ;; > Changed in version 2.6: A new protocol for write operations integrates
-  ;; > write concerns with the write operations, eliminating the need for a
-  ;; > separate getLastError. Most write methods now return the status of the
-  ;; > write operation, including error information.
-  ;; http://docs.mongodb.org/manual/reference/command/getLastError/
-  ;;
-  ;; CongoMongo provides a fetch-and-modify function that wraps MongoDB's
-  ;; findAndModify command, but I don't see the value of it, and I prefer to
-  ;; use the generic command function.
-  ;; "The findAndModify command modifies and returns a single document."
-  ;; http://docs.mongodb.org/manual/reference/command/findAndModify/
-  (let [collection (:collection entity)
-        id (if (string? id) (to-object-id id) id)
-        record (find-by-id model-component id)
-        _
-          (when-let [before-delete-fn (:before-delete entity)]
-            (before-delete-fn model-component record))
-        command-result
-          (db/with-mongo (:connection database)
-            ;; https://github.com/aboekhoff/congomongo/blob/master/src/somnium/congomongo.clj
-            ;; http://api.mongodb.org/java/current/com/mongodb/DB.html#command-com.mongodb.DBObject-
-            (db/command {:findAndModify (name collection)
-                         :query {:_id id}
-                         :remove true}))]
-    (when-let [composed-after-delete-fn
-                 (compose-delete-callback-fns (:after-delete entity)
-                                              model-component)]
-      (composed-after-delete-fn record))
-
-    (or (get-in command-result [:lastErrorObject :n]) 0)))
-
+;;; Utilities
 
 (defn beginning-of-day
   "Returns a map, to be used in the context of CongoMongo's interface to
