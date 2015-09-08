@@ -9,22 +9,6 @@
 (declare to-object-id)
 
 
-(defn add-to-callback-queue
-  "#IMPORTANT
-  Callback queues currently only supported in :after-update and :after-delete
-
-  Example:
-
-       (swap! (get-in component [:entity :after-update])  ; must be an atom
-              add-to-callback-queue
-              new-callback-fn)"
-  [callback-queue callback-fn]
-  (cond
-    (sequential? callback-queue) (conj callback-queue callback-fn)
-    (nil? callback-queue) [callback-fn]
-    :else (conj [callback-queue] callback-fn)))
-
-
 (defn create
   "These callbacks will be called, in the order listed here, if defined in
   the map under the :entity key of the `model-component` parameter:
@@ -681,6 +665,22 @@
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Utilities
+
+(defn add-to-callback-queue
+  "#IMPORTANT
+  Callback queues currently only supported in :after-update and :after-delete
+
+  Example:
+
+       (swap! (get-in component [:entity :after-update])  ; must be an atom
+              add-to-callback-queue
+              new-callback-fn)"
+  [callback-queue callback-fn]
+  (cond
+    (sequential? callback-queue) (conj callback-queue callback-fn)
+    (nil? callback-queue) [callback-fn]
+    :else (conj [callback-queue] callback-fn)))
+
 
 (defn beginning-of-day
   "Returns a map, to be used in the context of CongoMongo's interface to
