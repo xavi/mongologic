@@ -1,4 +1,4 @@
-(ns mongologic.coerce
+(ns ^:no-doc mongologic.coerce
   (:require [somnium.congomongo.coerce :as congomongo.coerce]))
 
 ; Fixes
