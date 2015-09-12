@@ -16,7 +16,7 @@ a flashcards app.
 
 Add this to your project's dependencies:
 
-    [mongologic "0.5.1"]
+    [mongologic "0.5.2"]
 
 
 ## Documentation

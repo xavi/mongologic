@@ -1,10 +1,5 @@
-; (ns mongologic.coerce
-;   (:require [somnium.congomongo.coerce :as congomongo.coerce]))
-
-(require '[somnium.congomongo.coerce :as congomongo.coerce])
-
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(ns mongologic.coerce
+  (:require [somnium.congomongo.coerce :as congomongo.coerce]))
 
 ; Fixes
 ;   can't serialize class org.joda.time.DateTime -
