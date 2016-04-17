@@ -9,5 +9,4 @@
                  [com.taoensso/timbre "4.3.1"]]
   :plugins [[lein-codox "0.9.4"]]
   :codox {:src-dir-uri "https://github.com/xavi/mongologic/blob/0.5.4/"
-          :src-linenum-anchor-prefix "L"}
-  :deploy-repositories [["releases" :clojars]])
+          :src-linenum-anchor-prefix "L"})
