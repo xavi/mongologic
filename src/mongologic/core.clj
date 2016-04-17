@@ -377,7 +377,7 @@
                       ;; the $ modifiers have to be used.
                       (db/with-mongo (:connection database)
                         (db/update! (:collection entity)
-                                    old-record
+                                    (select-keys old-record [:_id])
                                     modifications))
                       ;; CongoMongo's update! returns a WriteResult from the
                       ;; underlying Java driver
