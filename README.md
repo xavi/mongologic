@@ -99,6 +99,6 @@ all of them using a common database component to share the connection.)
 
 ## License
 
-Copyright © 2015 Xavi Caballé
+Copyright © 2015–2016 Xavi Caballé
 
 Licensed under the [Eclipse Public License](LICENSE).
