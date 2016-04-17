@@ -1,4 +1,4 @@
-(defproject mongologic "0.5.3"
+(defproject mongologic "0.5.2"
   :description "Toolkit to develop MongoDB apps with Clojure"
   :url "https://github.com/xavi/mongologic"
   :license {:name "Eclipse Public License"
